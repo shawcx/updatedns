@@ -1,0 +1,156 @@
+#!/usr/bin/env python
+
+import fcntl
+import json
+import os
+import socket
+import struct
+import sys
+import time
+
+try:
+    import configparser
+except ImportError:
+    import ConfigParser as configparser
+
+try:
+    import libcloud.dns.providers
+    from libcloud.dns.types import Provider, RecordType
+except ImportError:
+    sys.stderr.write('Missing libcloud package\n')
+    sys.exit(-1)
+
+
+def main():
+    config = initialize()
+    if config is None:
+        return -1
+
+    loop(config)
+
+    return 0
+
+
+def initialize():
+    config = {
+        'providers'  : {},
+        'hosts'      : {},
+        'interfaces' : {},
+    }
+
+    ini = configparser.SafeConfigParser()
+    ini.optionxform = str
+
+    try:
+        ok = ini.read(['updatedns.ini'])
+    except configparser.ParsingError as e:
+        print e
+        return None
+
+    for section in ini.sections():
+        section = section.strip()
+        if section.startswith(':'):
+            provider = section[1:]
+            Driver = libcloud.dns.providers.get_driver(getattr(Provider, provider))
+            credentials = dict(ini.items(section))
+            driver = Driver(**credentials)
+            config['providers'][provider] = driver
+        else:
+            host = dict(ini.items(section))
+            if 'interface' not in host:
+                print 'Missing interface from host', section
+                return None
+
+            if host['interface'] not in config['interfaces']:
+                config['interfaces'][host['interface']] = None
+
+            config['hosts'][section] = host
+
+    return config
+
+def loop(config):
+    while True:
+        for interface in config['interfaces']:
+            try:
+                local_address = get_local_address(interface)
+            except:
+                sys.stderr.write('Could not get address for interface %s\n', interface)
+                continue
+
+            print 'Interface address:', local_address
+            if local_address != config['interfaces'][interface]:
+                config['interfaces'][interface] = local_address
+
+        for host,params in config['hosts'].items():
+            local_address = config['interfaces'][params['interface']]
+            current_address = socket.gethostbyname(host)
+
+            if local_address != current_address:
+                driver = config['providers'][params['dns']]
+                subdomain,domain = host.split('.', 1)
+                print 'Need to update', host, 'to', local_address
+                update(driver, subdomain, domain, local_address)
+
+        time.sleep(60)
+
+
+def get_local_address(ifname):
+    SIOCGIFADDR = 0x8915
+
+    skt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    ifname = struct.pack('256s', ifname[:15])
+    data = fcntl.ioctl(skt.fileno(), SIOCGIFADDR, ifname)
+    return socket.inet_ntoa(data[20:24])
+
+
+def update(driver, subdomain, domain, ip):
+    if not domain.endswith('.'):
+        domain += '.'
+
+    zones = driver.list_zones()
+    for zone in zones:
+        if zone.domain != domain:
+            continue
+
+        records = driver.list_records(zone)
+        for record in records:
+            if record.name != subdomain:
+                continue
+            driver.update_record(record, record.name, record.type, ip)
+            break
+
+        break
+
+
+if '__main__' == __name__:
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+
+
+if False:
+    import libcloud.dns.providers
+    from libcloud.dns.types import Provider, RecordType
+
+    Route53 = libcloud.dns.providers.get_driver(Provider.ROUTE53)
+    driver = Route53(key='AKIAIRDUBPP2YGM2DGYQ', secret='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')
+
+    zones = driver.list_zones()
+    for zone in zones:
+        print zone.domain
+        print
+        records = driver.list_records(zone)
+        for record in records:
+            print record
+            #if record.name == 'test':
+            #    print 'Updating...'
+            #    driver.update_record(record, record.name, record.type, '10.9.8.19')
+        print
+
+#zone = [zone for zone in zones if zone.domain == 'mydomain.com'][0]
+#record = zone.create_record(name='www', type=RecordType.A, data='127.0.0.1')
+#print(record)
+
+#print get_ip_address(sys.argv[1])
