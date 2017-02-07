@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+from __future__ import print_function
 
 import fcntl
 import json
@@ -22,21 +24,9 @@ except ImportError:
 
 
 def main():
-    config = initialize()
-    if config is None:
-        return -1
-
-    loop(config)
-
-    return 0
-
-
-def initialize():
-    config = {
-        'providers'  : {},
-        'hosts'      : {},
-        'interfaces' : {},
-    }
+    hosts      = {}
+    providers  = {}
+    interfaces = {}
 
     ini = configparser.SafeConfigParser()
     ini.optionxform = str
@@ -44,113 +34,87 @@ def initialize():
     try:
         ok = ini.read(['updatedns.ini'])
     except configparser.ParsingError as e:
-        print e
-        return None
+        print(e)
+        return -1
 
     for section in ini.sections():
         section = section.strip()
+        
         if section.startswith(':'):
             provider = section[1:]
             Driver = libcloud.dns.providers.get_driver(getattr(Provider, provider))
             credentials = dict(ini.items(section))
             driver = Driver(**credentials)
-            config['providers'][provider] = driver
+            providers[provider] = driver
+        
         else:
             host = dict(ini.items(section))
             if 'interface' not in host:
-                print 'Missing interface from host', section
+                print('Missing interface from host', section)
                 return None
 
-            if host['interface'] not in config['interfaces']:
-                config['interfaces'][host['interface']] = None
+            if host['interface'] not in interfaces:
+                interfaces[host['interface']] = None
 
-            config['hosts'][section] = host
+            hosts[section] = host
 
-    return config
+    for name,driver in providers.items():
+        zones = driver.list_zones()
+        for zone in zones:
+            records = driver.list_records(zone)
+            for record in records:
+                if record.type != 'A':
+                    continue
 
-def loop(config):
+                hostname = zone.domain
+
+                if hostname.endswith('.'):
+                    hostname = hostname[:-1]
+                
+                if record.name:
+                    hostname = record.name + '.' + hostname
+
+                if hostname in hosts:
+                    hosts[hostname]['driver'] = driver
+                    hosts[hostname]['record'] = record
+                    print(hostname, record.data)
+
     while True:
-        for interface in config['interfaces']:
+        for interface in interfaces:
             try:
                 local_address = get_local_address(interface)
-            except:
-                sys.stderr.write('Could not get address for interface %s\n', interface)
+            except Exception as e:
+                print('Could not get address for interface', interface, ':', e)
                 continue
 
-            print 'Interface address:', local_address
-            if local_address != config['interfaces'][interface]:
-                config['interfaces'][interface] = local_address
+            if local_address != interfaces[interface]:
+                print('Interface', repr(interface), 'address:', local_address)
+                interfaces[interface] = local_address
 
-        for host,params in config['hosts'].items():
-            local_address = config['interfaces'][params['interface']]
-            current_address = socket.gethostbyname(host)
+        for host,params in hosts.items():
+            local_address = interfaces[params['interface']]
+            record = params['record']
+            if local_address != record.data:
+                print('Updating', record.name, 'to', local_address)
+                params['driver'].update_record(record, record.name, record.type, local_address)
+                record.data = local_address
 
-            if local_address != current_address:
-                driver = config['providers'][params['dns']]
-                subdomain,domain = host.split('.', 1)
-                print 'Need to update', host, 'to', local_address
-                update(driver, subdomain, domain, local_address)
+        time.sleep(60.0)
 
-        time.sleep(60)
+    return 0
 
 
 def get_local_address(ifname):
     SIOCGIFADDR = 0x8915
-
     skt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    ifname = struct.pack('256s', ifname[:15])
+    ifname = ifname[:15].encode('ascii')
+    ifname = struct.pack('256s', ifname)
     data = fcntl.ioctl(skt.fileno(), SIOCGIFADDR, ifname)
     return socket.inet_ntoa(data[20:24])
 
 
-def update(driver, subdomain, domain, ip):
-    if not domain.endswith('.'):
-        domain += '.'
-
-    zones = driver.list_zones()
-    for zone in zones:
-        if zone.domain != domain:
-            continue
-
-        records = driver.list_records(zone)
-        for record in records:
-            if record.name != subdomain:
-                continue
-            driver.update_record(record, record.name, record.type, ip)
-            break
-
-        break
-
-
 if '__main__' == __name__:
     try:
-        main()
+        sys.exit(main())
     except KeyboardInterrupt:
         pass
-
-
-if False:
-    import libcloud.dns.providers
-    from libcloud.dns.types import Provider, RecordType
-
-    Route53 = libcloud.dns.providers.get_driver(Provider.ROUTE53)
-    driver = Route53(key='AKIAIRDUBPP2YGM2DGYQ', secret='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')
-
-    zones = driver.list_zones()
-    for zone in zones:
-        print zone.domain
-        print
-        records = driver.list_records(zone)
-        for record in records:
-            print record
-            #if record.name == 'test':
-            #    print 'Updating...'
-            #    driver.update_record(record, record.name, record.type, '10.9.8.19')
-        print
-
-#zone = [zone for zone in zones if zone.domain == 'mydomain.com'][0]
-#record = zone.create_record(name='www', type=RecordType.A, data='127.0.0.1')
-#print(record)
-
-#print get_ip_address(sys.argv[1])
