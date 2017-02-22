@@ -31,8 +31,11 @@ def main():
     ini = configparser.SafeConfigParser()
     ini.optionxform = str
 
+    ini_path = os.path.dirname(__file__)
+    ini_path = os.path.join(ini_path, 'updatedns.ini')
+
     try:
-        ok = ini.read(['updatedns.ini'])
+        ok = ini.read([ini_path])
     except configparser.ParsingError as e:
         print(e)
         return -1
