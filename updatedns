@@ -77,7 +77,7 @@ def main():
                 if hostname in hosts:
                     hosts[hostname]['driver'] = driver
                     hosts[hostname]['record'] = record
-                    print(hostname, record.data)
+                    print(hostname, ':=', record.data)
 
     while True:
         for interface in interfaces:
@@ -93,6 +93,10 @@ def main():
 
         for host,params in hosts.items():
             local_address = interfaces[params['interface']]
+
+            if 'record' not in params:
+                continue
+
             record = params['record']
             if local_address != record.data:
                 print('Updating', record.name, 'to', local_address)
