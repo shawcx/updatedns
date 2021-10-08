@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 
-from __future__ import print_function
-
+import sys
+import os
+import argparse
+import collections
+import configparser
 import fcntl
 import json
-import os
 import socket
 import struct
-import sys
 import time
 
-try:
-    import configparser
-except ImportError:
-    import ConfigParser as configparser
 
 try:
     import libcloud.dns.providers
@@ -23,90 +20,225 @@ except ImportError:
     sys.exit(-1)
 
 
-def main():
-    hosts      = {}
-    providers  = {}
-    interfaces = {}
-
-    ini = configparser.SafeConfigParser()
-    ini.optionxform = str
-
-    ini_path = os.path.dirname(__file__)
-    ini_path = os.path.join(ini_path, 'updatedns.ini')
-
-    try:
-        ok = ini.read([ini_path])
-    except configparser.ParsingError as e:
-        print(e)
-        return -1
-
-    for section in ini.sections():
-        section = section.strip()
-        
-        if section.startswith(':'):
-            provider = section[1:]
-            Driver = libcloud.dns.providers.get_driver(getattr(Provider, provider))
-            credentials = dict(ini.items(section))
-            driver = Driver(**credentials)
-            providers[provider] = driver
-        
+class MultiOrderedDict(dict):
+    def __setitem__(self, key, value):
+        if isinstance(value, list) and key in self:
+            self[key].extend(value)
         else:
-            host = dict(ini.items(section))
-            if 'interface' not in host:
-                print('Missing interface from host', section)
-                return None
+            super().__setitem__(key, value)
 
-            if host['interface'] not in interfaces:
-                interfaces[host['interface']] = None
 
-            hosts[section] = host
+class UsageError(Exception):
+    pass
 
-    for name,driver in providers.items():
-        zones = driver.list_zones()
-        for zone in zones:
-            records = driver.list_records(zone)
-            for record in records:
-                if record.type != 'A':
+
+class UpdateDns:
+    def __init__(self, args):
+        self.interfaces = collections.defaultdict(list)
+        self.drivers    = {}
+        self.domains    = {}
+        self.records    = {}
+
+        self.verbose = args.verbose
+
+        # get a list of providers that this version of libcloud supports
+        libcloud_providers = []
+        for provider in dir(Provider):
+            if provider.startswith('__'):
+                continue
+            libcloud_providers.append(provider)
+
+        ini = configparser.ConfigParser(dict_type=MultiOrderedDict, strict=False)
+        ini.optionxform = str
+
+        try:
+            ok = ini.read(args.ini)
+        except configparser.ParsingError as e:
+            raise ValueError(str(e)) from None
+
+        if not ok:
+            raise ValueError('Could not open ' + args.ini) from None
+
+        for section in ini.sections():
+            provider = section.strip().upper()
+            hostname = section.strip()
+
+            # check to see if section name is a DNS provider
+            if provider in libcloud_providers:
+                credentials = dict(ini.items(section))
+
+                domains = credentials.pop('domain', '')
+                domains = domains.split('\n')
+
+                Driver = libcloud.dns.providers.get_driver(getattr(Provider, provider))
+                driver = Driver(**credentials)
+                self.drivers[provider] = driver
+
+                for domain in domains:
+                    self.domains[domain] = [driver]
+
+            else:
+                host = dict(ini.items(section))
+                if 'interface' not in host:
+                    print('Missing interface from host', section)
+                    continue
+                self.interfaces[host['interface']].append(hostname)
+
+        self.enumerate()
+
+        if args.list:
+            self.list()
+        elif args.monitor:
+            self.monitor()
+        elif args.delete:
+            self.delete(args.delete)
+        elif args.name and args.addr:
+            self.create(args.name, args.addr)
+        elif args.name or args.addr:
+            raise ValueError('specify --name and --addr')
+        else:
+            raise UsageError()
+
+    def _log(self, *args):
+        if self.verbose:
+            print(*args)
+
+    def enumerate(self):
+        for provider,driver in self.drivers.items():
+            for zone in driver.list_zones():
+                zone_domain = zone.domain
+                if zone_domain.endswith('.'):
+                    zone_domain = zone_domain[:-1]
+
+                if zone_domain not in self.domains:
+                    self._log('Skipping', zone_domain)
                     continue
 
-                hostname = zone.domain
+                self.domains[zone_domain].append(zone)
 
-                if hostname.endswith('.'):
-                    hostname = hostname[:-1]
-                
-                if record.name:
-                    hostname = record.name + '.' + hostname
+                for record in driver.list_records(zone):
+                    if record.type != 'A':
+                        continue
+                    domain_name = zone.domain
+                    if domain_name.endswith('.'):
+                        domain_name = domain_name[:-1]
 
-                if hostname in hosts:
-                    hosts[hostname]['driver'] = driver
-                    hosts[hostname]['record'] = record
-                    print(hostname, ':=', record.data)
+                    fqdn = domain_name
+                    if record.name and record.name != '@':
+                        fqdn = record.name + '.' + fqdn
 
-    while True:
-        for interface in interfaces:
-            try:
-                local_address = get_local_address(interface)
-            except Exception as e:
-                print('Could not get address for interface', interface, ':', e)
+                    self.records[fqdn] = record
+
+    def list(self):
+        for fqdn,record in self.records.items():
+            print('%-16s %s' % (record.data, fqdn))
+
+    def _find_driver(self, fqdn):
+        for zone_domain in self.domains:
+            if not fqdn.endswith(zone_domain):
+                continue
+            driver,zone = self.domains[zone_domain]
+            name = fqdn[:-(len(zone_domain)+1)]
+            return driver,zone,name
+
+        raise ValueError('Unknown domain:', fqdn)
+
+    def create(self, fqdn, addr):
+        driver,zone,name = self._find_driver(fqdn)
+
+        if fqdn in self.records:
+            record = self.records[fqdn]
+            if addr != record.data:
+                self.records[fqdn] = driver.update_record(record, data=addr)
+                self._log('Updated:', fqdn, '=', addr)
+                return True
+            else:
+                self._log('No change:', fqdn, '=', addr)
+        else:
+            self.records[fqdn] = driver.create_record(name, zone, RecordType.A, addr)
+            self._log('Created:', fqdn, '=', addr)
+            return True
+
+    def delete(self, fqdns):
+        for fqdn in fqdns:
+            if fqdn not in self.records:
+                self._log('Unknown host:', fqdn)
                 continue
 
-            if local_address != interfaces[interface]:
-                print('Interface', repr(interface), 'address:', local_address)
-                interfaces[interface] = local_address
+            driver,zone,name = self._find_driver(fqdn)
 
-        for host,params in hosts.items():
-            local_address = interfaces[params['interface']]
+            driver.delete_record(self.records[fqdn])
+            del self.records[fqdn]
+            self._log('Deleted:', fqdn)
 
-            if 'record' not in params:
-                continue
+    def monitor(self):
+        while True:
+            for interface,fqdns in self.interfaces.items():
+                try:
+                    local_address = get_local_address(interface)
+                except Exception as e:
+                    self._log('Could not get address for interface', interface, ':', e)
+                    continue
 
-            record = params['record']
-            if local_address != record.data:
-                print('Updating', record.name, 'to', local_address)
-                params['driver'].update_record(record, record.name, record.type, local_address)
-                record.data = local_address
+                for fqdn in fqdns:
+                    modified = self.create(fqdn,local_address)
+                    if modified:
+                        print('Updated:', fqdn, '=', local_address)
 
-        time.sleep(60.0)
+            time.sleep(60.0)
+
+
+def main():
+    argparser = argparse.ArgumentParser()
+
+    argparser.add_argument('--name', '-n',
+        metavar='<name>',
+        help='create or update new DNS entry'
+        )
+
+    argparser.add_argument('--addr', '-a',
+        metavar='<ip>',
+        help='address for new DNS entry'
+        )
+
+    argparser.add_argument('--list', '-l',
+        action='store_true',
+        help='list all zones'
+        )
+
+    argparser.add_argument('--monitor', '-m',
+        action='store_true',
+        help='monitor interfaces for changes'
+        )
+
+    argparser.add_argument('--delete', '-d',
+        metavar='<name>', nargs='+',
+        help='delete DNS entry'
+        )
+
+    argparser.add_argument('--ini', '-i',
+        metavar='<path>',
+        help='ini file to parse'
+        )
+
+    argparser.add_argument('--verbose', '-v',
+        action='store_true',
+        help='enable verbose options'
+        )
+
+    args = argparser.parse_args()
+
+    if not args.ini:
+        args.ini = os.path.join(os.path.dirname(__file__), 'updatedns.ini')
+
+    try:
+        updateDns = UpdateDns(args)
+    except UsageError:
+        argparser.print_help()
+        return -1
+    except ValueError as e:
+        print('ERROR:', e)
+        return -1
 
     return 0
 
