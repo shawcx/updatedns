@@ -1,0 +1,27 @@
+
+; specify the provider and the API keys
+; you can specify multiple domains per provider
+; domain = <domain registered with that provider>
+
+[digital_ocean]
+key       = abcd1234
+domain    = domain.tld
+
+[route53]
+key       = <key value>
+secret    = <secret>
+domain    = example.com
+domain    = test.io
+
+; these are for the --monitor option
+; if the IP address of an interface changes
+; it will update the dns entry
+
+[sub.domain.tld]
+interface = wan0
+
+[yep.example.com]
+interface = eth0
+
+[yep.test.io]
+interface = eth0
