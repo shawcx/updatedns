@@ -3,7 +3,7 @@ Description=Update DNS
 
 [Service]
 Type=simple
-ExecStart=/opt/updatedns/updatedns
+ExecStart=/opt/updatedns/updatedns --monitor
 
 [Install]
 WantedBy=multi-user.target
