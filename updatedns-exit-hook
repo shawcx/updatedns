@@ -1,0 +1,15 @@
+#!/bin/sh
+
+updatedns() {
+    if [ "$new_ip_address" = "$old_ip_address" ]; then
+        return
+    fi
+    /usr/local/bin/updatedns
+}
+
+
+case $reason in
+    BOUND|RENEW|REBIND|REBOOT)
+        updatedns
+        ;;
+esac
