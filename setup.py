@@ -11,7 +11,7 @@ setuptools.setup(
     version              = __version__,
     license              = __license__,
     url                  = 'https://shaw.cx/updatedns',
-    description          = 'Command-Line GIT Server',
+    description          = 'Command-Line Cloud DNS utility',
     long_description     = open('README.md').read(),
     packages             = setuptools.find_packages(),
     include_package_data = True,
