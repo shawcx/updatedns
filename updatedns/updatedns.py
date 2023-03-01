@@ -51,7 +51,6 @@ def main():
 
     argparser.add_argument('--ini', '-i',
         metavar='<path>',
-        #default=os.path.join(os.path.dirname(__file__), 'updatedns.ini'),
         help='ini file to parse'
         )
 
@@ -67,9 +66,9 @@ def main():
 
     args = argparser.parse_args()
 
-    if not (args.list is not None) and \
+    if args.list is None and \
        not args.monitor and \
-       not args.delete  and \
+       not args.delete and \
        not (args.name or args.addr):
             argparser.print_help()
             sys.exit(-1)
@@ -153,7 +152,6 @@ class UpdateDns:
 
                 for domain in domains:
                     if args.list and domain not in args.list:
-                        print('skip', domain)
                         continue
                     self.domains[domain] = [driver]
             else:

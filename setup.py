@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-from setuptools import setup
+import setuptools
 
 exec(compile(open('updatedns/version.py').read(),'version.py','exec'))
 
-setup(
+setuptools.setup(
     name                 = 'updatedns',
     author               = __author__,
     author_email         = __email__,
