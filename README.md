@@ -24,15 +24,13 @@ Add a FQDN entry specifying which interface to monitor and update.
 	interface = eth0
 
 
-Providers as of libcloud-2.8.0
+Providers as of libcloud-3.7.0
 ------------------------------
 * auroradns
 * buddyns
 * cloudflare
 * digital_ocean
 * dnsimple
-* dnspod
-* dummy
 * durabledns
 * gandi
 * gandi_live
@@ -48,8 +46,6 @@ Providers as of libcloud-2.8.0
 * pointdns
 * powerdns
 * rackspace
-* rackspace_uk
-* rackspace_us
 * rcodezero
 * route53
 * softlayer
