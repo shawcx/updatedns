@@ -11,6 +11,7 @@ import socket
 import struct
 import time
 
+from . import version
 
 try:
     import libcloud.dns.providers
@@ -20,16 +21,76 @@ except ImportError:
     sys.exit(-1)
 
 
-class MultiOrderedDict(dict):
-    def __setitem__(self, key, value):
-        if isinstance(value, list) and key in self:
-            self[key].extend(value)
-        else:
-            super().__setitem__(key, value)
+def main():
+    argparser = argparse.ArgumentParser()
 
+    argparser.add_argument('--name', '-n',
+        metavar='<name>',
+        help='create or update new DNS entry'
+        )
 
-class UsageError(Exception):
-    pass
+    argparser.add_argument('--addr', '-a',
+        metavar='<ip>',
+        help='address for new DNS entry'
+        )
+
+    argparser.add_argument('--list', '-l',
+        metavar='<domain>', nargs='*',
+        help='list all zones'
+        )
+
+    argparser.add_argument('--monitor', '-m',
+        action='store_true',
+        help='monitor interfaces for changes'
+        )
+
+    argparser.add_argument('--delete', '-d',
+        metavar='<name>', nargs='+',
+        help='delete DNS entry'
+        )
+
+    argparser.add_argument('--ini', '-i',
+        metavar='<path>',
+        #default=os.path.join(os.path.dirname(__file__), 'updatedns.ini'),
+        help='ini file to parse'
+        )
+
+    argparser.add_argument('--verbose', '-v',
+        action='store_true',
+        help='enable verbose options'
+        )
+
+    argparser.add_argument('--version', '-V',
+        action='version', version=f'updatedns {version.__version__}',
+        help='display version and exit'
+        )
+
+    args = argparser.parse_args()
+
+    if not (args.list is not None) and \
+       not args.monitor and \
+       not args.delete  and \
+       not (args.name or args.addr):
+            argparser.print_help()
+            sys.exit(-1)
+
+    try:
+        updateDns = UpdateDns(args)
+        if args.list is not None:
+            updateDns.list()
+        elif args.monitor:
+            updateDns.monitor()
+        elif args.delete:
+            updateDns.delete(args.delete)
+        elif args.name and args.addr:
+            updateDns.create(args.name, args.addr)
+        elif args.name or args.addr:
+            raise ValueError('specify --name and --addr')
+    except ValueError as e:
+        print(f'[!] Error: {e}', file=sys.stderr)
+        sys.exit(-1)
+
+    sys.exit(0)
 
 
 class UpdateDns:
@@ -38,8 +99,7 @@ class UpdateDns:
         self.drivers    = {}
         self.domains    = {}
         self.records    = {}
-
-        self.verbose = args.verbose
+        self.verbose    = args.verbose
 
         # get a list of providers that this version of libcloud supports
         libcloud_providers = []
@@ -48,16 +108,24 @@ class UpdateDns:
                 continue
             libcloud_providers.append(provider)
 
-        ini = configparser.ConfigParser(dict_type=MultiOrderedDict, strict=False)
+        ini = configparser.ConfigParser(dict_type=MultiDict, strict=False)
         ini.optionxform = str
 
-        try:
-            ok = ini.read(args.ini)
-        except configparser.ParsingError as e:
-            raise ValueError(str(e)) from None
+        ini_paths = [
+            os.path.join(os.path.dirname(__file__), 'updatedns.ini'),
+            '/etc/updatedns.ini',
+            os.path.expanduser('~/.updatedns.ini'),
+            ]
 
+        if args.ini:
+            ini_paths.append(args.ini)
+
+        try:
+            ok = ini.read(ini_paths)
+        except configparser.ParsingError as e:
+            raise ValueError(f'Parsing error: {e}') from None
         if not ok:
-            raise ValueError('Could not open ' + args.ini) from None
+            raise ValueError(f'Could not open any ini file') from None
 
         for section in ini.sections():
             provider = section.strip().upper()
@@ -70,42 +138,46 @@ class UpdateDns:
                 domains = credentials.pop('domain', '')
                 domains = domains.split('\n')
 
+                if args.list:
+                    in_zone = False
+                    for l in args.list:
+                        if l in domains:
+                            in_zone = True
+                            break
+                    if not in_zone:
+                        continue
+
                 Driver = libcloud.dns.providers.get_driver(getattr(Provider, provider))
                 driver = Driver(**credentials)
                 self.drivers[provider] = driver
 
                 for domain in domains:
+                    if args.list and domain not in args.list:
+                        print('skip', domain)
+                        continue
                     self.domains[domain] = [driver]
-
             else:
                 host = dict(ini.items(section))
                 if 'interface' not in host:
-                    print('Missing interface from host', section)
+                    self._log('[-] Missing interface from host {section}', file=sys.stderr)
                     continue
                 self.interfaces[host['interface']].append(hostname)
 
         self.enumerate()
 
-        if args.list:
-            self.list()
-        elif args.monitor:
-            self.monitor()
-        elif args.delete:
-            self.delete(args.delete)
-        elif args.name and args.addr:
-            self.create(args.name, args.addr)
-        elif args.name or args.addr:
-            raise ValueError('specify --name and --addr')
-        else:
-            raise UsageError()
-
-    def _log(self, *args):
+    def _log(self, *args, **kwargs):
         if self.verbose:
-            print(*args)
+            print(*args, **kwargs)
 
     def enumerate(self):
         for provider,driver in self.drivers.items():
-            for zone in driver.list_zones():
+            try:
+                zones = driver.list_zones()
+            except Exception as e:
+                self._log(f'[-] Warning: {provider}: {e}', file=sys.stderr)
+                continue
+
+            for zone in zones:
                 zone_domain = zone.domain
                 if zone_domain.endswith('.'):
                     zone_domain = zone_domain[:-1]
@@ -131,7 +203,7 @@ class UpdateDns:
 
     def list(self):
         for fqdn,record in self.records.items():
-            print('%-16s %s' % (record.data, fqdn))
+            print(f'{record.data:16} {fqdn}')
 
     def _find_driver(self, fqdn):
         for zone_domain in self.domains:
@@ -172,6 +244,14 @@ class UpdateDns:
             self._log('Deleted:', fqdn)
 
     def monitor(self):
+        def get_local_address(ifname):
+            SIOCGIFADDR = 0x8915
+            skt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ifname = ifname[:15].encode('ascii')
+            ifname = struct.pack('256s', ifname)
+            data = fcntl.ioctl(skt.fileno(), SIOCGIFADDR, ifname)
+            return socket.inet_ntoa(data[20:24])
+
         while True:
             for interface,fqdns in self.interfaces.items():
                 try:
@@ -179,81 +259,20 @@ class UpdateDns:
                 except Exception as e:
                     self._log('Could not get address for interface', interface, ':', e)
                     continue
-
                 for fqdn in fqdns:
                     modified = self.create(fqdn,local_address)
                     if modified:
-                        print('Updated:', fqdn, '=', local_address)
-
+                        self._log(f'Updated: {fqdn} = {local_address}')
             time.sleep(60.0)
 
 
-def main():
-    argparser = argparse.ArgumentParser()
-
-    argparser.add_argument('--name', '-n',
-        metavar='<name>',
-        help='create or update new DNS entry'
-        )
-
-    argparser.add_argument('--addr', '-a',
-        metavar='<ip>',
-        help='address for new DNS entry'
-        )
-
-    argparser.add_argument('--list', '-l',
-        action='store_true',
-        help='list all zones'
-        )
-
-    argparser.add_argument('--monitor', '-m',
-        action='store_true',
-        help='monitor interfaces for changes'
-        )
-
-    argparser.add_argument('--delete', '-d',
-        metavar='<name>', nargs='+',
-        help='delete DNS entry'
-        )
-
-    argparser.add_argument('--ini', '-i',
-        metavar='<path>',
-        help='ini file to parse'
-        )
-
-    argparser.add_argument('--verbose', '-v',
-        action='store_true',
-        help='enable verbose options'
-        )
-
-    args = argparser.parse_args()
-
-    if not args.ini:
-        args.ini = os.path.join(os.path.dirname(__file__), 'updatedns.ini')
-
-    try:
-        updateDns = UpdateDns(args)
-    except UsageError:
-        argparser.print_help()
-        return -1
-    except ValueError as e:
-        print('ERROR:', e)
-        return -1
-
-    return 0
-
-
-def get_local_address(ifname):
-    SIOCGIFADDR = 0x8915
-    skt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ifname = ifname[:15].encode('ascii')
-    ifname = struct.pack('256s', ifname)
-    data = fcntl.ioctl(skt.fileno(), SIOCGIFADDR, ifname)
-    return socket.inet_ntoa(data[20:24])
+class MultiDict(dict):
+    def __setitem__(self, key, value):
+        if key in self and isinstance(value, list):
+            self[key].extend(value)
+        else:
+            super(MultiDict, self).__setitem__(key, value)
 
 
 if '__main__' == __name__:
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        pass
+    main()

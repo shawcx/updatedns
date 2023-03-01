@@ -1,9 +1,9 @@
 [Unit]
-Description=Update DNS
+Description=UpdateDNS
 
 [Service]
 Type=simple
-ExecStart=/opt/updatedns/updatedns --monitor
+ExecStart=updatedns --monitor
 
 [Install]
 WantedBy=multi-user.target
