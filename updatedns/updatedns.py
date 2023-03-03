@@ -181,7 +181,7 @@ class UpdateDns:
                     zone_domain = zone_domain[:-1]
 
                 if zone_domain not in self.domains:
-                    self._log('Skipping', zone_domain)
+                    self._log(f'Skipping {zone_domain}')
                     continue
 
                 self.domains[zone_domain].append(zone)
@@ -210,7 +210,6 @@ class UpdateDns:
             driver,zone = self.domains[zone_domain]
             name = fqdn[:-(len(zone_domain)+1)]
             return driver,zone,name
-
         raise ValueError('Unknown domain:', fqdn)
 
     def create(self, fqdn, addr):
@@ -220,26 +219,29 @@ class UpdateDns:
             record = self.records[fqdn]
             if addr != record.data:
                 self.records[fqdn] = driver.update_record(record, data=addr)
-                self._log('Updated:', fqdn, '=', addr)
+                self._log(f'Updated: {fqdn} = {addr}')
                 return True
             else:
-                self._log('No change:', fqdn, '=', addr)
+                self._log(f'No change: {fqdn} = {addr}')
         else:
-            self.records[fqdn] = driver.create_record(name, zone, RecordType.A, addr)
-            self._log('Created:', fqdn, '=', addr)
-            return True
+            try:
+                self.records[fqdn] = driver.create_record(name, zone, RecordType.A, addr)
+                self._log(f'Created: {fqdn} = {addr}')
+                return True
+            except Exception as e:
+                print(f'[!] Error: {e}', file=sys.stderr)
 
     def delete(self, fqdns):
         for fqdn in fqdns:
             if fqdn not in self.records:
-                self._log('Unknown host:', fqdn)
+                self._log(f'Unknown host: {fqdn}')
                 continue
 
             driver,zone,name = self._find_driver(fqdn)
 
             driver.delete_record(self.records[fqdn])
             del self.records[fqdn]
-            self._log('Deleted:', fqdn)
+            self._log(f'Deleted: {fqdn}')
 
     def monitor(self):
         def get_local_address(ifname):
@@ -255,7 +257,7 @@ class UpdateDns:
                 try:
                     local_address = get_local_address(interface)
                 except Exception as e:
-                    self._log('Could not get address for interface', interface, ':', e)
+                    self._log(f'Could not get address for interface {interface}: {e}')
                     continue
                 for fqdn in fqdns:
                     modified = self.create(fqdn,local_address)
