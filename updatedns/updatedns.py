@@ -24,6 +24,16 @@ except ImportError:
 def main():
     argparser = argparse.ArgumentParser()
 
+    argparser.add_argument('--zones', '-z',
+        action='store_true',
+        help='list all zones available for configured providers'
+        )
+
+    argparser.add_argument('--list', '-l',
+        metavar='<domain>', nargs='*',
+        help='list all records in configured zones'
+        )
+
     argparser.add_argument('--name', '-n',
         metavar='<name>',
         help='create or update new DNS entry'
@@ -34,9 +44,9 @@ def main():
         help='address for new DNS entry'
         )
 
-    argparser.add_argument('--list', '-l',
-        metavar='<domain>', nargs='*',
-        help='list all zones'
+    argparser.add_argument('--delete', '-d',
+        metavar='<name>', nargs='+',
+        help='delete DNS entry'
         )
 
     argparser.add_argument('--monitor', '-m',
@@ -44,14 +54,9 @@ def main():
         help='monitor interfaces for changes'
         )
 
-    argparser.add_argument('--delete', '-d',
-        metavar='<name>', nargs='+',
-        help='delete DNS entry'
-        )
-
     argparser.add_argument('--ini', '-i',
         metavar='<path>',
-        help='ini file to parse'
+        help='alternate ini file to parse'
         )
 
     argparser.add_argument('--verbose', '-v',
@@ -67,6 +72,7 @@ def main():
     args = argparser.parse_args()
 
     if args.list is None and \
+       not args.zones and \
        not args.monitor and \
        not args.delete and \
        not (args.name or args.addr):
@@ -75,6 +81,8 @@ def main():
 
     try:
         updateDns = UpdateDns(args)
+        if args.zones:
+            updateDns.list_zones()
         if args.list is not None:
             updateDns.list()
         elif args.monitor:
@@ -87,14 +95,15 @@ def main():
             raise ValueError('specify --name and --addr')
     except ValueError as e:
         print(f'[!] Error: {e}', file=sys.stderr)
-        sys.exit(-1)
+        return -1
 
-    sys.exit(0)
+    return 0
 
 
 class UpdateDns:
     def __init__(self, args):
         self.interfaces = collections.defaultdict(list)
+        self.zones      = collections.defaultdict(list)
         self.drivers    = {}
         self.domains    = {}
         self.records    = {}
@@ -180,6 +189,8 @@ class UpdateDns:
                 if zone_domain.endswith('.'):
                     zone_domain = zone_domain[:-1]
 
+                self.zones[provider].append(zone_domain)
+
                 if zone_domain not in self.domains:
                     self._log(f'Skipping {zone_domain}')
                     continue
@@ -198,6 +209,14 @@ class UpdateDns:
                         fqdn = record.name + '.' + fqdn
 
                     self.records[fqdn] = record
+
+    def list_zones(self):
+        for provider,zones in self.zones.items():
+            print(provider)
+            for zone in zones:
+                prefix = '*' if zone in self.domains else ' '
+                print(f'{prefix} {zone}')
+            print()
 
     def list(self):
         for fqdn,record in self.records.items():
@@ -275,4 +294,4 @@ class MultiDict(dict):
 
 
 if '__main__' == __name__:
-    main()
+    sys.exit(main())
