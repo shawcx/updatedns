@@ -41,7 +41,7 @@ def main():
 
     argparser.add_argument('--addr', '-a',
         metavar='<ip>',
-        help='address for new DNS entry'
+        help='address for DNS entry'
         )
 
     argparser.add_argument('--delete', '-d',
@@ -90,7 +90,7 @@ def main():
         elif args.delete:
             updateDns.delete(args.delete)
         elif args.name and args.addr:
-            updateDns.create(args.name, args.addr)
+            updateDns.set(args.name, args.addr)
         elif args.name or args.addr:
             raise ValueError('specify --name and --addr')
     except ValueError as e:
@@ -229,9 +229,9 @@ class UpdateDns:
             driver,zone = self.domains[zone_domain]
             name = fqdn[:-(len(zone_domain)+1)]
             return driver,zone,name
-        raise ValueError('Unknown domain:', fqdn)
+        raise ValueError(f'Unknown domain: {fqdn}')
 
-    def create(self, fqdn, addr):
+    def set(self, fqdn, addr):
         driver,zone,name = self._find_driver(fqdn)
 
         if fqdn in self.records:
@@ -239,14 +239,12 @@ class UpdateDns:
             if addr != record.data:
                 self.records[fqdn] = driver.update_record(record, data=addr)
                 self._log(f'Updated: {fqdn} = {addr}')
-                return True
             else:
                 self._log(f'No change: {fqdn} = {addr}')
         else:
             try:
                 self.records[fqdn] = driver.create_record(name, zone, RecordType.A, addr)
                 self._log(f'Created: {fqdn} = {addr}')
-                return True
             except Exception as e:
                 print(f'[!] Error: {e}', file=sys.stderr)
 
@@ -279,7 +277,7 @@ class UpdateDns:
                     self._log(f'Could not get address for interface {interface}: {e}')
                     continue
                 for fqdn in fqdns:
-                    modified = self.create(fqdn,local_address)
+                    modified = self.set(fqdn, local_address)
                     if modified:
                         self._log(f'Updated: {fqdn} = {local_address}')
             time.sleep(60.0)
