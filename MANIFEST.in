@@ -1,2 +1,2 @@
 recursive-include updatedns *
-include *.rst
+include *.md
