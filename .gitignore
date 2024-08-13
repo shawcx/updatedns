@@ -1,6 +1,7 @@
 *.pyc
-*.egg-info
 /updatedns.ini
 /build
 /dist
 /deb_dist
+/*.egg-info
+/*.tar.gz
