@@ -6,7 +6,8 @@ import argparse
 import collections
 import configparser
 import fcntl
-import json
+import ipaddress
+import logging
 import socket
 import struct
 import time
@@ -17,11 +18,19 @@ try:
     import libcloud.dns.providers
     from libcloud.dns.types import Provider, RecordType
 except ImportError:
-    sys.stderr.write('Missing libcloud package\n')
-    sys.exit(-1)
+    sys.exit('Missing libcloud package')
 
 
-def main():
+log = logging.getLogger('updatedns')
+
+INI_PATHS = [
+    os.path.join(os.path.dirname(__file__), 'updatedns.ini'),
+    '/etc/updatedns.ini',
+    os.path.expanduser('~/.updatedns.ini'),
+    ]
+
+
+def main(argv=None):
     argparser = argparse.ArgumentParser()
 
     argparser.add_argument('--zones', '-z',
@@ -41,7 +50,7 @@ def main():
 
     argparser.add_argument('--addr', '-a',
         metavar='<ip>',
-        help='address for DNS entry'
+        help='IPv4 or IPv6 address for DNS entry'
         )
 
     argparser.add_argument('--delete', '-d',
@@ -65,8 +74,8 @@ def main():
         )
 
     argparser.add_argument('--verbose', '-v',
-        action='store_true',
-        help='enable verbose options'
+        action='count', default=0,
+        help='log changes (-v) or everything (-vv)'
         )
 
     argparser.add_argument('--version', '-V',
@@ -74,7 +83,7 @@ def main():
         help='display version and exit'
         )
 
-    args = argparser.parse_args()
+    args = argparser.parse_args(argv)
 
     if args.list is None and \
        not args.zones and \
@@ -82,7 +91,11 @@ def main():
        not args.delete and \
        not (args.name or args.addr):
             argparser.print_help()
-            sys.exit(-1)
+            return 1
+
+    # only raise our own logger's level so -vv doesn't turn on libcloud/urllib3 debugging
+    logging.basicConfig(format='%(levelname)s: %(message)s')
+    log.setLevel([logging.WARNING, logging.INFO, logging.DEBUG][min(args.verbose, 2)])
 
     try:
         updateDns = UpdateDns(args)
@@ -99,10 +112,10 @@ def main():
         elif args.name or args.addr:
             raise ValueError('specify --name and --addr')
     except ValueError as e:
-        print(f'[!] Error: {e}', file=sys.stderr)
-        return -1
+        log.error(e)
+        return 1
 
-    return 0
+    return 1 if updateDns.errors else 0
 
 
 class UpdateDns:
@@ -112,7 +125,7 @@ class UpdateDns:
         self.drivers    = {}
         self.domains    = {}
         self.records    = {}
-        self.verbose    = args.verbose
+        self.errors     = 0
 
         # get a list of providers that this version of libcloud supports
         libcloud_providers = []
@@ -124,12 +137,7 @@ class UpdateDns:
         ini = configparser.ConfigParser(dict_type=MultiDict, strict=False)
         ini.optionxform = str
 
-        ini_paths = [
-            os.path.join(os.path.dirname(__file__), 'updatedns.ini'),
-            '/etc/updatedns.ini',
-            os.path.expanduser('~/.updatedns.ini'),
-            ]
-
+        ini_paths = list(INI_PATHS)
         if args.ini:
             ini_paths.append(args.ini)
 
@@ -169,24 +177,37 @@ class UpdateDns:
                         continue
                     self.domains[domain] = [driver]
             else:
-                host = dict(ini.items(section))
+                host = ini[section]
                 if 'interface' not in host:
-                    self._log(f'[-] Missing interface from host {section}', file=sys.stderr)
+                    log.warning(f'Missing interface from host {section}')
                     continue
-                self.interfaces[host['interface']].append(hostname)
+
+                try:
+                    record_types = []
+                    if host.getboolean('ipv4', fallback=True):
+                        record_types.append(RecordType.A)
+                    if host.getboolean('ipv6', fallback=False):
+                        record_types.append(RecordType.AAAA)
+                except ValueError as e:
+                    raise ValueError(f'{section}: {e}') from None
+                if not record_types:
+                    log.warning(f'Both ipv4 and ipv6 are off for host {section}')
+                    continue
+
+                self.interfaces[host['interface']].append((hostname, record_types))
 
         self.enumerate()
 
-    def _log(self, *args, **kwargs):
-        if self.verbose:
-            print(*args, **kwargs)
+    def _error(self, message):
+        log.error(message)
+        self.errors += 1
 
     def enumerate(self):
         for provider,driver in self.drivers.items():
             try:
                 zones = driver.list_zones()
             except Exception as e:
-                self._log(f'[-] Warning: {provider}: {e}', file=sys.stderr)
+                self._error(f'{provider}: {e}')
                 continue
 
             for zone in zones:
@@ -197,23 +218,30 @@ class UpdateDns:
                 self.zones[provider].append(zone_domain)
 
                 if zone_domain not in self.domains:
-                    self._log(f'Skipping {zone_domain}')
+                    log.debug(f'Skipping {zone_domain}')
                     continue
 
                 self.domains[zone_domain].append(zone)
 
-                for record in driver.list_records(zone):
-                    if record.type != 'A':
-                        continue
-                    domain_name = zone.domain
-                    if domain_name.endswith('.'):
-                        domain_name = domain_name[:-1]
+                try:
+                    records = driver.list_records(zone)
+                except Exception as e:
+                    self._error(f'{provider}: {zone_domain}: {e}')
+                    continue
 
-                    fqdn = domain_name
+                for record in records:
+                    if record.type not in ADDRESS_LOOKUP:
+                        continue
+
+                    fqdn = zone_domain
                     if record.name and record.name != '@':
                         fqdn = record.name + '.' + fqdn
 
-                    self.records[fqdn] = record
+                    self.records[(fqdn, record.type)] = record
+
+        for domain,entry in self.domains.items():
+            if len(entry) < 2:
+                log.warning(f'Zone not found at provider: {domain}')
 
     def list_zones(self):
         for provider,zones in self.zones.items():
@@ -224,8 +252,9 @@ class UpdateDns:
             print()
 
     def list(self):
-        for fqdn,record in self.records.items():
-            print(f'{record.data:16} {fqdn}')
+        width = max((len(record.data) for record in self.records.values()), default=0)
+        for (fqdn,record_type),record in self.records.items():
+            print(f'{record.data:{width}} {record_type:4} {fqdn}')
 
     def _find_driver(self, fqdn):
         # longest match first so a configured sub-zone wins over its parent
@@ -240,61 +269,115 @@ class UpdateDns:
         raise ValueError(f'Unknown domain: {fqdn}')
 
     def set(self, fqdn, addr):
+        try:
+            addr = ipaddress.ip_address(addr)
+        except ValueError:
+            raise ValueError(f'Invalid address: {addr}') from None
+        record_type = RecordType.A if addr.version == 4 else RecordType.AAAA
+
         driver,zone,name = self._find_driver(fqdn)
 
-        if fqdn in self.records:
-            record = self.records[fqdn]
-            if addr != record.data:
+        key = (fqdn, record_type)
+        if key in self.records:
+            record = self.records[key]
+            if not same_address(addr, record.data):
                 try:
-                    self.records[fqdn] = driver.update_record(record, data=addr)
-                    self._log(f'Updated: {fqdn} = {addr}')
+                    self.records[key] = driver.update_record(record, data=str(addr))
+                    log.info(f'Updated {fqdn} {record_type} {addr}')
                 except Exception as e:
-                    print(f'[!] Error: {e}', file=sys.stderr)
+                    self._error(f'{fqdn}: {e}')
             else:
-                self._log(f'No change: {fqdn} = {addr}')
+                log.debug(f'No change {fqdn} {record_type} {addr}')
         else:
             try:
-                self.records[fqdn] = driver.create_record(name, zone, RecordType.A, addr)
-                self._log(f'Created: {fqdn} = {addr}')
+                self.records[key] = driver.create_record(name, zone, record_type, str(addr))
+                log.info(f'Created {fqdn} {record_type} {addr}')
             except Exception as e:
-                print(f'[!] Error: {e}', file=sys.stderr)
+                self._error(f'{fqdn}: {e}')
 
     def delete(self, fqdns):
         for fqdn in fqdns:
-            if fqdn not in self.records:
-                self._log(f'Unknown host: {fqdn}')
+            keys = [key for key in self.records if key[0] == fqdn]
+            if not keys:
+                self._error(f'Unknown host: {fqdn}')
                 continue
 
             driver,zone,name = self._find_driver(fqdn)
 
-            driver.delete_record(self.records[fqdn])
-            del self.records[fqdn]
-            self._log(f'Deleted: {fqdn}')
+            for key in keys:
+                try:
+                    driver.delete_record(self.records[key])
+                except Exception as e:
+                    self._error(f'{fqdn}: {e}')
+                    continue
+                del self.records[key]
+                log.info(f'Deleted {fqdn} {key[1]}')
 
     def monitor(self, once=False):
-        def get_local_address(ifname):
-            SIOCGIFADDR = 0x8915
-            skt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            ifname = ifname[:15].encode('ascii')
-            ifname = struct.pack('256s', ifname)
-            data = fcntl.ioctl(skt.fileno(), SIOCGIFADDR, ifname)
-            return socket.inet_ntoa(data[20:24])
-
         while True:
-            for interface,fqdns in self.interfaces.items():
-                try:
-                    local_address = get_local_address(interface)
-                except Exception as e:
-                    self._log(f'Could not get address for interface {interface}: {e}')
-                    continue
-                for fqdn in fqdns:
-                    try:
-                        self.set(fqdn, local_address)
-                    except ValueError as e:
-                        print(f'[!] Error: {e}', file=sys.stderr)
+            for interface,hosts in self.interfaces.items():
+                addresses = {}
+                for fqdn,record_types in hosts:
+                    for record_type in record_types:
+                        if record_type not in addresses:
+                            try:
+                                addresses[record_type] = ADDRESS_LOOKUP[record_type](interface)
+                            except (OSError, LookupError) as e:
+                                self._error(f'Could not get {record_type} address for interface {interface}: {e}')
+                                addresses[record_type] = None
+                        if addresses[record_type] is None:
+                            continue
+                        try:
+                            self.set(fqdn, addresses[record_type])
+                        except ValueError as e:
+                            self._error(e)
             if once:
                 break
             time.sleep(60.0)
+
+
+def same_address(addr, data):
+    # providers may hand back IPv6 addresses in a different textual form
+    try:
+        return addr == ipaddress.ip_address(data)
+    except ValueError:
+        return False
+
+
+def ipv4_address(ifname):
+    SIOCGIFADDR = 0x8915
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as skt:
+        ifname = ifname[:15].encode('ascii')
+        ifname = struct.pack('256s', ifname)
+        data = fcntl.ioctl(skt.fileno(), SIOCGIFADDR, ifname)
+    return socket.inet_ntoa(data[20:24])
+
+
+# address flags from linux/if_addr.h that make an address a poor DNS target
+IFA_F_TEMPORARY  = 0x01
+IFA_F_DADFAILED  = 0x08
+IFA_F_DEPRECATED = 0x20
+IFA_F_TENTATIVE  = 0x40
+
+def ipv6_address(ifname, path='/proc/net/if_inet6'):
+    # each line is: address ifindex prefixlen scope flags ifname, all hex but ifname
+    with open(path) as fp:
+        for line in fp:
+            fields = line.split()
+            if len(fields) != 6 or fields[5] != ifname:
+                continue
+            if int(fields[4], 16) & (IFA_F_TEMPORARY | IFA_F_DADFAILED | IFA_F_DEPRECATED | IFA_F_TENTATIVE):
+                continue
+            addr = ipaddress.IPv6Address(bytes.fromhex(fields[0]))
+            if addr.is_global:
+                return str(addr)
+    raise LookupError('no stable global IPv6 address')
+
+
+ADDRESS_LOOKUP = {
+    RecordType.A    : ipv4_address,
+    RecordType.AAAA : ipv6_address,
+    }
 
 
 class MultiDict(dict):

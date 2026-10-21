@@ -1,0 +1,13 @@
+#!/bin/sh
+# NetworkManager dispatcher script: install as /etc/NetworkManager/dispatcher.d/90-updatedns
+# owned by root with mode 0755. NetworkManager passes the interface and the action.
+
+PATH="$PATH:/usr/local/sbin:/usr/local/bin"
+
+case "$2" in
+    up|dhcp4-change|dhcp6-change)
+        updatedns --monitor --once --verbose 2>&1 | logger -t updatedns
+        ;;
+esac
+
+exit 0

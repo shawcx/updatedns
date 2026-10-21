@@ -5,3 +5,5 @@
 /deb_dist
 /*.egg-info
 /*.tar.gz
+/updatedns/updatedns.ini
+/.pytest_cache

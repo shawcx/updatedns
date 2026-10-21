@@ -16,12 +16,15 @@ domain    = test.io
 ; these are for the --monitor option
 ; if the IP address of an interface changes
 ; it will update the dns entry
+; hosts get an A record by default; ipv6 = yes adds an AAAA record
+; and ipv4 = no drops the A record
 
 [sub.domain.tld]
 interface = wan0
 
 [yep.example.com]
 interface = eth0
+ipv6      = yes
 
 [yep.test.io]
 interface = eth0

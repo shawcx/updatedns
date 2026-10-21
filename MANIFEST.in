@@ -1,2 +1,3 @@
-recursive-include updatedns *
-include *.md
+include README.md updatedns.ini.sample
+include updatedns/updatedns.service updatedns/updatedns-*
+recursive-include tests *.py

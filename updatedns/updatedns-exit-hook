@@ -1,15 +1,26 @@
 #!/bin/sh
+# dhclient exit hook: install as /etc/dhcp/dhclient-exit-hooks.d/updatedns
+# dhclient-script sources this file, so it must not exit or return non-zero.
 
 update_dns() {
-    if [ "$new_ip_address" = "$old_ip_address" ]; then
-        return
-    fi
-    updatedns --monitor --once
+    # dhclient-script's PATH leaves out /usr/local/bin, where pip installs updatedns.
+    # Run in the background so a slow DNS API doesn't hold up dhclient.
+    (
+        PATH="$PATH:/usr/local/sbin:/usr/local/bin"
+        updatedns --monitor --once --verbose 2>&1 | logger -t updatedns
+    ) &
 }
 
 
 case $reason in
     BOUND|RENEW|REBIND|REBOOT)
-        update_dns
+        if [ "$new_ip_address" != "$old_ip_address" ]; then
+            update_dns
+        fi
+        ;;
+    BOUND6|RENEW6|REBIND6)
+        if [ "$new_ip6_address" != "$old_ip6_address" ]; then
+            update_dns
+        fi
         ;;
 esac

@@ -1,5 +1,5 @@
 __author__    = 'Matthew Shaw'
 __email__     = 'mshaw.cx@gmail.com'
-__copyright__ = '(c)2017-2023, Matthew Shaw'
+__copyright__ = '(c)2017-2026, Matthew Shaw'
 __license__   = 'MIT'
-__version__   = '0.7.3'
+__version__   = '0.8.0'

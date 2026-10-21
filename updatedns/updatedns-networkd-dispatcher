@@ -1,0 +1,9 @@
+#!/bin/sh
+# networkd-dispatcher script: install as /etc/networkd-dispatcher/routable.d/50-updatedns
+# owned by root with mode 0755. It runs when an interface becomes routable.
+
+PATH="$PATH:/usr/local/sbin:/usr/local/bin"
+
+updatedns --monitor --once --verbose 2>&1 | logger -t updatedns
+
+exit 0
