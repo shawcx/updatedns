@@ -69,7 +69,13 @@ always go to stderr. The exit status is 1 if anything failed.
 Running it automatically
 ------------------------
 
-The package includes a systemd unit and network hooks. Find them with
+The Debian package (`python3-updatedns`) installs the systemd unit and all
+the hooks below for you. The service is installed disabled: create
+`/etc/updatedns.ini` and then run `systemctl enable --now updatedns`. The
+hooks do nothing until `/etc/updatedns.ini` or `/root/.updatedns.ini`
+exists.
+
+With a pip install, copy the files into place yourself. Find them with
 `python3 -c 'import updatedns, os; print(os.path.dirname(updatedns.__file__))'`.
 
 * `updatedns.service` runs `updatedns --monitor --verbose` and restarts it

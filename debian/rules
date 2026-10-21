@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+export PYBUILD_NAME=updatedns
+
+PKG = debian/python3-updatedns
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+execute_after_dh_install:
+	install -D -m 0644 updatedns/updatedns.service $(PKG)/usr/lib/systemd/system/updatedns.service
+	install -D -m 0755 updatedns/updatedns-nm-dispatcher $(PKG)/etc/NetworkManager/dispatcher.d/90-updatedns
+	install -D -m 0755 updatedns/updatedns-networkd-dispatcher $(PKG)/etc/networkd-dispatcher/routable.d/50-updatedns
+	install -D -m 0644 updatedns/updatedns-exit-hook $(PKG)/etc/dhcp/dhclient-exit-hooks.d/updatedns
+
+# the service needs /etc/updatedns.ini first, so leave enabling it to the admin
+override_dh_installsystemd:
+	dh_installsystemd --no-enable

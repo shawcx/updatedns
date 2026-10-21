@@ -7,3 +7,10 @@
 /*.tar.gz
 /updatedns/updatedns.ini
 /.pytest_cache
+/.pybuild
+/debian/.debhelper
+/debian/python3-updatedns
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log
+/debian/debhelper-build-stamp

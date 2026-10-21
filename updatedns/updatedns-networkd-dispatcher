@@ -4,6 +4,9 @@
 
 PATH="$PATH:/usr/local/sbin:/usr/local/bin"
 
+# do nothing until updatedns is configured (the system-wide paths it reads)
+[ -e /etc/updatedns.ini ] || [ -e /root/.updatedns.ini ] || exit 0
+
 updatedns --monitor --once --verbose 2>&1 | logger -t updatedns
 
 exit 0

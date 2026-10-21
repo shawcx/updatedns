@@ -1,0 +1,26 @@
+Source: updatedns
+Maintainer: Matthew Shaw <mshaw.cx@gmail.com>
+Section: net
+Priority: optional
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               pybuild-plugin-pyproject,
+               python3-all,
+               python3-setuptools,
+               python3-libcloud,
+               python3-pytest,
+Standards-Version: 4.6.2
+Homepage: https://shaw.cx/updatedns
+Rules-Requires-Root: no
+
+Package: python3-updatedns
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}
+Description: Command-line cloud DNS utility and dynamic DNS client
+ Manages DNS A and AAAA records with any DNS provider that Apache libcloud
+ supports, and can keep records pointed at the current addresses of local
+ network interfaces.
+ .
+ Includes a systemd unit (installed disabled) and hooks for NetworkManager,
+ networkd-dispatcher and dhclient. The hooks do nothing until
+ /etc/updatedns.ini exists.

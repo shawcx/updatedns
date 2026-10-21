@@ -15,18 +15,25 @@ pip install -e .                              # install the `updatedns` console 
 python3 -m updatedns.updatedns --help         # run from the source tree without installing
 updatedns -i ./updatedns.ini -v --zones       # use a local config (updatedns.ini is gitignored; start from updatedns.ini.sample)
 python3 -m build --no-isolation               # build the sdist and wheel into dist/
-python3 setup.py --command-packages=stdeb.command bdist_deb   # build the Debian package into deb_dist/ (stdeb)
+dpkg-buildpackage -us -uc -b                  # build the Debian package; the .deb lands in the parent directory (..)
 ```
 
 There's no linter or CI.
 
 ## Packaging
 
-- Metadata lives in `pyproject.toml`.
-- The version lives only in `updatedns/version.py`, which `pyproject.toml` reads as a dynamic `attr`.
-- `setup.py` is a shim kept for stdeb. stdeb can't find the Debian Maintainer or Homepage in pyproject metadata (it checks for `'UNKNOWN'`, but setuptools returns `None`), so the shim passes `url` and the `sdist_dsc` maintainer option.
-- Don't add a `stdeb.cfg`: stdeb 0.10 on Python 3.12 crashes reading it, because it calls the removed `ConfigParser.readfp`.
+- Metadata lives in `pyproject.toml`, and there is no `setup.py`.
+- The version lives in `updatedns/version.py`, which `pyproject.toml` reads as a dynamic `attr`.
 - Package data is listed explicitly in `MANIFEST.in` and `[tool.setuptools.package-data]`, so a stray `updatedns/updatedns.ini` holding real credentials never ships.
+
+**Debian package**: `debian/` is a native package (`3.0 (native)`), so its version has no Debian revision.
+- On a release, add a `debian/changelog` entry whose version matches `updatedns/version.py`.
+- pybuild builds through the pyproject plugin and runs the pytest suite during the build.
+- `debian/rules` installs these files from `updatedns/` with `execute_after_dh_install`:
+  - the unit, to `/usr/lib/systemd/system`
+  - the hooks, to their `/etc` directories, where they become conffiles
+- `dh_installsystemd --no-enable` keeps the service off at install. `deb-systemd-invoke` won't start a disabled unit, and it still restarts the service on upgrade once it has been enabled.
+- Earlier releases (≤ 0.7.3) were built with stdeb into `deb_dist/`.
 
 ## Tests
 
@@ -68,9 +75,9 @@ Together they let a repeated `domain =` key accumulate into a single newline-joi
 
 A failed lookup logs an error and skips only the records that need that address.
 
-**Deployment files** (in `updatedns/`, shipped as package data, installation documented in the README): every hook runs `updatedns --monitor --once --verbose` and pipes its output to `logger -t updatedns`.
+**Deployment files** (in `updatedns/`, shipped as package data, installed by the `.deb`, and documented in the README for pip installs): every hook does nothing unless `/etc/updatedns.ini` or `/root/.updatedns.ini` exists. Otherwise it runs `updatedns --monitor --once --verbose` and pipes its output to `logger -t updatedns`.
 - `updatedns.service`: a systemd unit that runs `updatedns --monitor --verbose` after `network-online.target`, with `Restart=on-failure`.
 - `updatedns-nm-dispatcher`: a NetworkManager dispatcher script.
 - `updatedns-networkd-dispatcher`: a networkd-dispatcher `routable.d` script.
-- `updatedns-exit-hook`: a dhclient exit hook covering IPv4 and DHCPv6 lease changes. dhclient-script *sources* it, so it must never `exit` or return non-zero. It runs `updatedns` in the background.
+- `updatedns-exit-hook`: a dhclient exit hook covering IPv4 and DHCPv6 lease changes. dhclient-script *sources* it, so it must never `exit` or return non-zero. It has no shebang and is mode 0644, and it runs `updatedns` in the background.
 - The hooks append `/usr/local/bin` to `PATH`, because their callers' `PATH` can leave out where pip installs the script.

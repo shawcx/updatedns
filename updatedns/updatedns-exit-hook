@@ -1,8 +1,11 @@
-#!/bin/sh
 # dhclient exit hook: install as /etc/dhcp/dhclient-exit-hooks.d/updatedns
 # dhclient-script sources this file, so it must not exit or return non-zero.
 
 update_dns() {
+    # do nothing until updatedns is configured (the system-wide paths it reads)
+    if [ ! -e /etc/updatedns.ini ] && [ ! -e /root/.updatedns.ini ]; then
+        return 0
+    fi
     # dhclient-script's PATH leaves out /usr/local/bin, where pip installs updatedns.
     # Run in the background so a slow DNS API doesn't hold up dhclient.
     (

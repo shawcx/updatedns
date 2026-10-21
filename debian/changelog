@@ -1,0 +1,8 @@
+updatedns (0.8.0) unstable; urgency=medium
+
+  * IPv6 (AAAA) support, logging, exit codes, network hooks.
+  * Build with a native debian/ directory instead of stdeb, and install the
+    systemd unit and the NetworkManager, networkd-dispatcher and dhclient
+    hooks.
+
+ -- Matthew Shaw <mshaw.cx@gmail.com>  Wed, 21 Oct 2026 08:06:37 -0400
