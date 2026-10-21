@@ -54,6 +54,11 @@ def main():
         help='monitor interfaces for changes'
         )
 
+    argparser.add_argument('--once', '-1',
+        action='store_true',
+        help='with --monitor, check interfaces once and exit'
+        )
+
     argparser.add_argument('--ini', '-i',
         metavar='<path>',
         help='alternate ini file to parse'
@@ -86,7 +91,7 @@ def main():
         if args.list is not None:
             updateDns.list()
         elif args.monitor:
-            updateDns.monitor()
+            updateDns.monitor(args.once)
         elif args.delete:
             updateDns.delete(args.delete)
         elif args.name and args.addr:
@@ -166,7 +171,7 @@ class UpdateDns:
             else:
                 host = dict(ini.items(section))
                 if 'interface' not in host:
-                    self._log('[-] Missing interface from host {section}', file=sys.stderr)
+                    self._log(f'[-] Missing interface from host {section}', file=sys.stderr)
                     continue
                 self.interfaces[host['interface']].append(hostname)
 
@@ -223,9 +228,12 @@ class UpdateDns:
             print(f'{record.data:16} {fqdn}')
 
     def _find_driver(self, fqdn):
-        for zone_domain in self.domains:
-            if not fqdn.endswith(zone_domain):
+        # longest match first so a configured sub-zone wins over its parent
+        for zone_domain in sorted(self.domains, key=len, reverse=True):
+            if fqdn != zone_domain and not fqdn.endswith('.' + zone_domain):
                 continue
+            if len(self.domains[zone_domain]) < 2:
+                raise ValueError(f'Zone not found at provider: {zone_domain}')
             driver,zone = self.domains[zone_domain]
             name = fqdn[:-(len(zone_domain)+1)]
             return driver,zone,name
@@ -237,8 +245,11 @@ class UpdateDns:
         if fqdn in self.records:
             record = self.records[fqdn]
             if addr != record.data:
-                self.records[fqdn] = driver.update_record(record, data=addr)
-                self._log(f'Updated: {fqdn} = {addr}')
+                try:
+                    self.records[fqdn] = driver.update_record(record, data=addr)
+                    self._log(f'Updated: {fqdn} = {addr}')
+                except Exception as e:
+                    print(f'[!] Error: {e}', file=sys.stderr)
             else:
                 self._log(f'No change: {fqdn} = {addr}')
         else:
@@ -260,7 +271,7 @@ class UpdateDns:
             del self.records[fqdn]
             self._log(f'Deleted: {fqdn}')
 
-    def monitor(self):
+    def monitor(self, once=False):
         def get_local_address(ifname):
             SIOCGIFADDR = 0x8915
             skt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -277,9 +288,12 @@ class UpdateDns:
                     self._log(f'Could not get address for interface {interface}: {e}')
                     continue
                 for fqdn in fqdns:
-                    modified = self.set(fqdn, local_address)
-                    if modified:
-                        self._log(f'Updated: {fqdn} = {local_address}')
+                    try:
+                        self.set(fqdn, local_address)
+                    except ValueError as e:
+                        print(f'[!] Error: {e}', file=sys.stderr)
+            if once:
+                break
             time.sleep(60.0)
 
 
