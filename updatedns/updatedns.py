@@ -31,7 +31,12 @@ INI_PATHS = [
 
 
 def main(argv=None):
-    argparser = argparse.ArgumentParser()
+    argparser = argparse.ArgumentParser(
+        prog='updatedns',
+        description='Manage DNS A and AAAA records with any DNS provider that '
+                    'Apache libcloud supports, and keep them pointed at the '
+                    'addresses of local network interfaces.',
+        )
 
     argparser.add_argument('--zones', '-z',
         action='store_true',
